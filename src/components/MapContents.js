@@ -1,0 +1,311 @@
+import React, { useState, useEffect } from 'react';
+import { MapContainer, LayersControl, LayerGroup, TileLayer, Marker, Tooltip } from 'react-leaflet';
+import L from 'leaflet';
+import proj4 from 'proj4';
+
+// Fix for default marker icons in Leaflet
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
+import BaseMap from './layer/BaseMap';
+import LandList from './LandList';
+import CSVFileLocal from './layer/CSVFileLocal'; 
+import MapLegend from './MapLegend';
+import MapPopup from './MapPopup';
+import MapZoomToFeature from './MapZoomToFeature';
+
+import 'leaflet/dist/leaflet.css';
+import 'leaflet.pattern';
+import './map.css';
+
+// Configure Leaflet default icons
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
+});
+
+const CustomIcon = L.icon({
+    iconUrl: markerIcon,
+    iconSize: [50, 50],
+    iconAnchor: [25, 50]
+});
+
+// User location icon with person emoji
+const UserLocationIcon = L.divIcon({
+    className: 'user-location-icon',
+    html: `
+        <div style="
+            position: relative;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            background-color: #42f4e2;
+            border: 3px solid white;
+            border-radius: 50%;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        ">
+            🧍🏻‍♂️
+        </div>
+    `,
+    iconSize: [32, 32],
+    iconAnchor: [16, 16]
+});
+
+const MapContents = () => {
+    const [selectedFeature, setSelectedFeature] = useState(null);
+    const [markerPosition, setMarkerPosition] = useState(null);
+    const [userLocation, setUserLocation] = useState(null);
+    const [map, setMap] = useState(null);
+    const [isSidebarVisible, setIsSidebarVisible] = useState(true);
+    const [popupInfo, setPopupInfo] = useState({ feature: null, position: null });
+    const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+
+    useEffect(() => {
+        document.title = "แผนที่คลินิกและร้านขายยา"; //ตั้งชื่อหน้าเว็บ
+        
+        // เดิมหาตำแหน่งอุปกรณ์ย่อหลังเมื่อเปิดหน้า
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const { latitude, longitude } = position.coords;
+                    setUserLocation([latitude, longitude]);
+                },
+                (error) => {
+                    console.warn(`ไม่สามารถหาตำแหน่งได้: ${error.message}`);
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 10000,
+                    maximumAge: 0,
+                }
+            );
+        }
+        
+        function handleResize() {
+            const mobile = window.innerWidth <= 768;
+            setIsMobile(mobile);
+            // ไม่บิดสิดบาร์อัตโนมัติิมหว - ให้ผู้ใช้เลือกเอง
+        }
+        
+        window.addEventListener('resize', handleResize);
+        handleResize(); // เรียกเพื่อตั้งค่าเริ่มต้น
+        
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
+    useEffect(() => {
+        if (map && userLocation) {
+            map.setView(userLocation, 17);
+        }
+    }, [map, userLocation]);
+
+    const handleMapClick = (e) => {
+        if (!selectedFeature) {
+            setMarkerPosition(null);
+        }
+        // ปิด popup เมื่อคลิกที่แผนที่
+        setPopupInfo({ feature: null, position: null });
+    };
+
+    const handleClosePopup = () => {
+        setSelectedFeature(null);
+        setMarkerPosition(null);
+        setPopupInfo({ feature: null, position: null });
+    };
+
+    const handleMarkerClick = (item) => {
+        // ปิด popup เก่าก่อนเปิดใหม่
+        setPopupInfo({ feature: null, position: null });
+        setTimeout(() => {
+            setPopupInfo({ 
+                feature: item, 
+                position: [parseFloat(item.lat), parseFloat(item.long)] 
+            });
+        }, 0);
+    };
+
+
+
+    const handleSelectFeature = (feature) => {
+        setSelectedFeature(feature);
+        // กรณี GeoJSON
+        if (feature.properties && feature.properties['พิกัดกลางแปลง X (ม.)'] !== undefined && feature.properties['พิกัดกลางแปลง Y (ม.)'] !== undefined) {
+            const centerX = feature.properties['พิกัดกลางแปลง X (ม.)'];
+            const centerY = feature.properties['พิกัดกลางแปลง Y (ม.)'];
+            const [longitude, latitude] = proj4('EPSG:32647', 'EPSG:4326', [centerX, centerY]);
+            setMarkerPosition([latitude, longitude]);
+        }
+        // กรณี CSV (lat/long)
+        else if ((feature.lat || feature.lat === 0) && (feature.long || feature.long === 0)) {
+            // lat/long อาจเป็น string ต้องแปลงเป็น float
+            const lat = parseFloat(feature.lat);
+            const lng = parseFloat(feature.long);
+            if (!isNaN(lat) && !isNaN(lng)) {
+                setMarkerPosition([lat, lng]);
+            } else {
+                setMarkerPosition(null);
+            }
+        } else {
+            setMarkerPosition(null);
+        }
+    };
+
+    const toggleSidebar = () => {
+        setIsSidebarVisible(!isSidebarVisible);
+    };
+
+
+
+    return (
+        <div style={{ 
+            display: 'flex', 
+            height: '100vh', 
+            backgroundColor: '#ffffffff',
+            flexDirection: 'row' // เก็บเป็น row ทุกขนาดหน้าจอ
+        }}>
+            {isSidebarVisible && (
+                <div style={{
+                    flex: 'none', // เปลี่ยนเป็น 'none' ทั้ง mobile และ desktop เพื่อให้ใช้ width ที่กำหนด
+                    width: isMobile ? '180px' : '280px', // ลดขนาด desktop จาก 220px เป็น 80px
+                    height: '100vh',
+                    padding: isMobile ? '8px' : '5px', // ลด padding desktop ให้เหมาะสมกับขนาดที่เล็กลง
+                    fontSize: isMobile ? '14px' : '18px',
+                    fontFamily: "'THSarabun', sans-serif",
+                    textAlign: 'center',
+                    lineHeight: '0',
+                    position: 'relative',
+                    borderRight: '1px solid #ccc' // เพิ่มเส้นแบ่งด้านขวา
+                }}>
+                    <p style={{ lineHeight: '1' }}>
+                        <img 
+                            src={`${process.env.PUBLIC_URL}/assets/logo.png`} 
+                            alt="Logo" 
+                            style={{ 
+                                height: isMobile ? '50px' : '80px', // ลดขนาดโลโก้ desktop จาก 120px เป็น 80px
+                                maxWidth: '100px',
+                                objectFit: 'contain'
+                            }} 
+                        />
+                    </p>
+                    <p style={{ 
+                        fontSize: isMobile ? '12px' : '16px', // ลดขนาดข้อความ desktop จาก 20px เป็น 16px
+                        color: 'black', 
+                        lineHeight: '1.3',
+                        margin: isMobile ? '3px 0' : '6px 0' // ลด margin desktop นิดหน่อย
+                    }}>
+                        คลินิกและร้านขายยา<br />สิทธิ 30 บาท และประกันสังคม
+                    </p>
+                    <div style={{ lineHeight: '1.6' }}>
+                        <LandList onSelectFeature={handleSelectFeature} />
+                    </div>
+                    <button onClick={toggleSidebar} style={{
+                        position: 'absolute',
+                        zIndex: 1000,
+                        top: '5px', // ย้ายไปมุมบนขวาทั้ง mobile และ desktop
+                        right: '5px', // ย้ายไปมุมบนขวาทั้ง mobile และ desktop
+                        transform: 'none', // ไม่ใช้ transform แล้ว
+                        backgroundColor: 'white',
+                        color: 'black',
+                        border: '1px solid black',
+                        borderRadius: '5px',
+                        padding: isMobile ? '5px 8px' : '8px 10px', // เพิ่ม padding นิดหน่อยสำหรับ desktop
+                        cursor: 'pointer',
+                        fontSize: isMobile ? '12px' : '14px' // ลดขนาดฟอนต์ desktop นิดหน่อย
+                    }}>
+                        ×
+                    </button>
+                </div>
+            )}
+
+            <div style={{ 
+                flex: 1, // ให้แผนที่ใช้พื้นที่ที่เหลือ
+                height: '100vh',
+                position: 'relative'
+            }}>
+                {!isSidebarVisible && (
+                    <button onClick={toggleSidebar} style={{
+                        position: 'absolute',
+                        zIndex: 1000,
+                        top: isMobile ? '10px' : '50%',
+                        left: '10px',
+                        transform: isMobile ? 'none' : 'translateY(-50%)',
+                        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                        color: 'black',
+                        border: '2px solid #333',
+                        borderRadius: '8px',
+                        padding: isMobile ? '8px 12px' : '12px 18px',
+                        cursor: 'pointer',
+                        fontSize: isMobile ? '14px' : '16px',
+                        fontWeight: 'bold',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                        backdropFilter: 'blur(5px)'
+                    }}>
+                        {isMobile ? 'เมนู' : '◄ เมนู'}
+                    </button>
+                )}
+
+                <MapContainer
+                    style={{ width: '100%', height: '100%' }}
+                    center={[7.177892 , 100.602965]}
+                    zoom={13}
+                    scrollWheelZoom={true}
+                    onClick={handleMapClick}
+                    whenCreated={setMap}
+                >
+                    <TileLayer
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+                    <LayersControl position="topright">
+                        <LayersControl.Overlay name="BaseMap" checked>
+                            <BaseMap />
+                        </LayersControl.Overlay>
+                        <LayersControl.Overlay name="สิทธิ 30 บาท" checked>
+                            <LayerGroup>
+                                <CSVFileLocal type="thirty" onMarkerClick={handleMarkerClick} />
+                            </LayerGroup>
+                        </LayersControl.Overlay>
+                        <LayersControl.Overlay name="สิทธิประกันสังคม" checked>
+                            <LayerGroup>
+                                <CSVFileLocal type="ss" onMarkerClick={handleMarkerClick} />
+                            </LayerGroup>
+                        </LayersControl.Overlay>
+                        <LayersControl.Overlay name="ใช้ได้ทั้ง 2 สิทธิ์" checked>
+                            <LayerGroup>
+                                <CSVFileLocal type="both" onMarkerClick={handleMarkerClick} />
+                            </LayerGroup>
+                        </LayersControl.Overlay>
+                        {/* เพิ่มเลเยอร์อื่น ๆ ที่นี่ */}
+                    </LayersControl>
+
+                    <MapZoomToFeature feature={selectedFeature} markerPosition={markerPosition} />
+                    <MapLegend />
+
+                    {userLocation && (
+                        <Marker position={userLocation} icon={UserLocationIcon}>
+                            <Tooltip direction="top" offset={[0, -20]} opacity={1} permanent={false}>
+                                ตำแหน่งของฉัน
+                            </Tooltip>
+                        </Marker>
+                    )}
+
+                    {/* ไม่ต้องแสดง Marker ซ้ำ ให้ซูมไปยัง point อย่างเดียว */}
+                </MapContainer>
+
+                {/* ย้าย popup ออกมานอก MapContainer */}
+                {selectedFeature && <MapPopup feature={selectedFeature} markerPosition={markerPosition} onClose={handleClosePopup} />}
+                {popupInfo.feature && popupInfo.position && (
+                    <MapPopup feature={popupInfo.feature} markerPosition={popupInfo.position} onClose={() => setPopupInfo({ feature: null, position: null })} />
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default MapContents;
